@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EcoConnect-X · AI-Powered Environmental & Smart City Intelligence Platform</title>
+<!-- vendored so the dashboard works on poor connectivity (field offices, hackathon wifi) -->
+<link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
+<script src="/static/vendor/leaflet/leaflet.js"></script>
+<script src="/static/vendor/chart.umd.js"></script>
+<style>
+  :root { --bg:#111614; --panel:#1a211e; --line:#2b3632; --text:#e8efe9; --muted:#93a39a;
+          --green:#3ccf7a; --amber:#f2b33d; --red:#ef5b4c; --blue:#4ea3ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; align-items:center; gap:24px; padding:14px 24px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:20px; margin:0; } header h1 span { color:var(--green); }
+  nav button { background:none; border:1px solid var(--line); color:var(--muted); padding:8px 14px; border-radius:8px; cursor:pointer; margin-right:6px; font-size:14px; }
+  nav button.active { background:var(--green); color:#062012; border-color:var(--green); font-weight:600; }
+  main { display:grid; grid-template-columns: 1fr 380px; height: calc(100vh - 62px); }
+  #map { height:100%; background:#0d1210; }
+  aside { overflow-y:auto; padding:18px; border-left:1px solid var(--line); background:var(--panel); }
+  .kpis { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px; }
+  .kpi { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .kpi b { display:block; font-size:22px; } .kpi small { color:var(--muted); }
+  h3 { font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:18px 0 8px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  td, th { padding:6px 4px; border-bottom:1px solid var(--line); text-align:left; }
+  .pill { padding:2px 8px; border-radius:99px; font-size:12px; font-weight:600; }
+  .score { font-size:56px; font-weight:700; line-height:1; }
+  .hint { color:var(--muted); font-size:13px; }
+  .legend { font-size:12px; color:var(--muted); display:flex; gap:12px; flex-wrap:wrap; margin-top:6px; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; }
+  .view { display:none; } .view.active { display:block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>EcoConnect<span>-X</span></h1>
+  <div style="color:var(--muted);font-size:13px;line-height:1.2">AI-Powered Environmental &amp;<br>Smart City Intelligence Platform</div>
+  <nav>
+    <button data-v="muni" class="active">Municipality / Panchayat</button>
+    <button data-v="collector">Collector</button>
+    <button data-v="buyer">Home Buyer</button>
+  </nav>
+  <div style="margin-left:auto;background:#3a2a08;color:var(--amber);border:1px solid var(--amber);padding:6px 12px;border-radius:8px;font-size:12px;font-weight:700;letter-spacing:.05em">DEMO — SIMULATED DATA</div>
+</header>
+<main>
+  <div id="map"></div>
+  <aside>
+    <!-- Municipality -->
+    <section class="view active" id="v-muni">
+      <div class="kpis" id="kpis"></div>
+      <h3>Waste generated — last 28 days + 7-day AI forecast</h3>
+      <canvas id="fc" height="160"></canvas>
+      <h3>Hotspots</h3>
+      <table id="hs"></table>
+      <h3>Streets driven less than the waste requires</h3>
+      <table id="under"></table>
+      <h3>Flagged vehicle trips (IsolationForest)</h3>
+      <table id="trips"></table>
+      <div class="legend">
+        <span><i style="background:var(--red)"></i>under-served</span>
+        <span><i style="background:var(--amber)"></i>watch</span>
+        <span><i style="background:var(--green)"></i>ok</span>
+        <span><i style="background:var(--blue)"></i>over-served</span>
+      </div>
+    </section>
+    <!-- Collector -->
+    <section class="view" id="v-collector">
+      <h3>Vehicle</h3>
+      <select id="veh" style="width:100%;padding:8px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px"></select>
+      <div class="kpis" id="rk" style="margin-top:12px"></div>
+      <h3>Today's AI route (bins forecast ≥70% full or 4+ days old)</h3>
+      <table id="stops"></table>
+    </section>
+    <!-- Buyer -->
+    <section class="view" id="v-buyer">
+      <p class="hint">Click anywhere on the map to check a plot. The score blends waste generation, nearby hotspots,
+        open-dumping reports, how reliably the collection vehicle comes, and whether waste is rising.</p>
+      <div id="buyer"></div>
+      <div class="legend">
+        <span><i style="background:var(--green)"></i>Clean ≥60</span>
+        <span><i style="background:var(--amber)"></i>Moderate 40–60</span>
+        <span><i style="background:var(--red)"></i>Waste-stressed &lt;40</span>
+      </div>
+    </section>
+  </aside>
+</main>
+<script>
+const map = L.map('map').setView([12.759, 75.201], 14);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+  { attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 19 }).addTo(map);
+const layers = { muni: L.layerGroup(), collector: L.layerGroup(), buyer: L.layerGroup() };
+const COL = { 'under-served':'#ef5b4c', watch:'#f2b33d', ok:'#3ccf7a', 'over-served':'#4ea3ff', 'no bin':'#3a4641' };
+const zoneCol = z => z === 'Clean' ? '#3ccf7a' : z === 'Moderate' ? '#f2b33d' : '#ef5b4c';
+const get = u => fetch(u).then(r => r.json());
+const fmt = n => Number(n).toLocaleString('en-IN');
+
+async function muni() {
+  const s = await get('/api/summary');
+  const bt = s.routing_backtest;
+  document.getElementById('kpis').innerHTML = [
+    [fmt(s.waste_today_kg) + ' kg', 'waste today'],
+    [fmt(s.forecast_tomorrow_kg) + ' kg', 'forecast tomorrow'],
+    [s.forecast.wape_pct + '%', 'forecast error (WAPE)'],
+    [s.hotspots, 'hotspots detected'],
+    [s.coverage['under-served'] || 0, 'under-served streets'],
+    [bt.km_saved_pct + '%', 'fewer km with AI routes'],
+  ].map(([b, t]) => `<div class="kpi"><b>${b}</b><small>${t}</small></div>`).join('');
+
+  const f = await get('/api/forecast');
+  new Chart(document.getElementById('fc'), { type: 'line', data: {
+      labels: [...f.history.map(d => d.date.slice(5,10)), ...f.forecast.map(d => d.date.slice(5,10))],
+      datasets: [
+        { label: 'actual kg', data: [...f.history.map(d => d.generated_kg), ...f.forecast.map(() => null)], borderColor: '#93a39a', pointRadius: 0 },
+        { label: 'forecast kg', data: [...f.history.map(() => null), ...f.forecast.map(d => d.pred_kg)], borderColor: '#3ccf7a', borderDash: [5,4], pointRadius: 2 }]},
+    options: { plugins: { legend: { labels: { color: '#93a39a' } } },
+      scales: { x: { ticks: { color: '#93a39a', maxTicksLimit: 8 } }, y: { ticks: { color: '#93a39a' } } } } });
+
+  const streets = await get('/api/streets');
+  window.STREETS = streets;
+  ['collector', 'buyer'].forEach(k => streets.forEach(s => L.polyline([[s.lat1, s.lon1], [s.lat2, s.lon2]],
+      { color: '#3a4641', weight: 2, interactive: false }).addTo(layers[k])));
+  streets.forEach(s => L.polyline([[s.lat1, s.lon1], [s.lat2, s.lon2]],
+      { color: COL[s.status], weight: s.status === 'under-served' ? 6 : 3, opacity: .9 })
+    .bindPopup(`<b>${s.street_id}</b> (${s.land_use})<br>visits/week: ${s.visits_per_week}<br>needed/week: ${s.required_per_week}<br>status: ${s.status}`)
+    .addTo(layers.muni));
+  const hs = await get('/api/hotspots');
+  hs.forEach(h => L.circle([h.lat, h.lon], { radius: h.radius_m, color: h.type === 'dumping' ? '#ef5b4c' : '#f2b33d', fillOpacity: .15 })
+    .bindPopup(`<b>${h.hotspot_id}</b> ${h.type} hotspot<br>${h.kg_day} kg/day<br>${h.n_bins} bins · ${h.n_reports} reports`).addTo(layers.muni));
+  document.getElementById('hs').innerHTML = '<tr><th>ID</th><th>type</th><th>kg/day</th><th>bins/reports</th></tr>' +
+    hs.map(h => `<tr><td>${h.hotspot_id}</td><td>${h.type}</td><td>${h.kg_day}</td><td>${h.n_bins}/${h.n_reports}</td></tr>`).join('');
+  const under = streets.filter(s => s.status === 'under-served').sort((a, b) => b.gap - a.gap).slice(0, 8);
+  document.getElementById('under').innerHTML = '<tr><th>street</th><th>land use</th><th>visits/wk</th><th>needed</th></tr>' +
+    under.map(s => `<tr><td>${s.street_id}</td><td>${s.land_use}</td><td>${s.visits_per_week}</td><td>${s.required_per_week}</td></tr>`).join('');
+  const trips = await get('/api/trips?anomalies=1');
+  document.getElementById('trips').innerHTML = '<tr><th>vehicle</th><th>date</th><th>streets</th><th>idle min</th><th>why</th></tr>' +
+    trips.slice(0, 8).map(t => `<tr><td>${t.vehicle_id}</td><td>${String(t.date).slice(0,10)}</td><td>${t.streets}</td><td>${t.idle_min}</td><td>${t.reason}</td></tr>`).join('');
+}
+
+async function collector() {
+  const r = await get('/api/route');
+  const vs = [...new Set(r.summary.vehicles.map(v => v.vehicle_id))];
+  const sel = document.getElementById('veh');
+  sel.innerHTML = vs.map(v => `<option>${v}</option>`).join('');
+  const draw = () => {
+    if (window.routeLayer) window.routeLayer.remove();
+    window.routeLayer = L.layerGroup().addTo(layers.collector);
+    const v = sel.value, stops = r.stops.filter(s => s.vehicle_id === v), info = r.summary.vehicles.find(x => x.vehicle_id === v);
+    const pts = [r.depot, ...stops.map(s => [s.lat, s.lon]), r.depot];
+    const line = L.polyline(pts, { color: '#3ccf7a', weight: 4 }).addTo(window.routeLayer);
+    if (map.hasLayer(layers.collector)) map.fitBounds(line.getBounds(), { padding: [60, 60] });
+    L.marker(r.depot).bindPopup('Depot').addTo(window.routeLayer);
+    stops.forEach(s => L.circleMarker([s.lat, s.lon], { radius: 9, color: '#fff', fillColor: s.expected_pct >= 100 ? '#ef5b4c' : '#f2b33d', fillOpacity: 1 })
+      .bindTooltip(String(s.seq), { permanent: true, direction: 'center', className: '' }).addTo(window.routeLayer));
+    document.getElementById('rk').innerHTML = [[info.stops, 'stops today'], [info.km + ' km', 'AI route'],
+      [info.fixed_beat_stops, 'stops on fixed beat'], [info.fixed_beat_km + ' km', 'fixed beat']]
+      .map(([b, t]) => `<div class="kpi"><b>${b}</b><small>${t}</small></div>`).join('');
+    document.getElementById('stops').innerHTML = '<tr><th>#</th><th>bin</th><th>fill</th><th>why</th></tr>' +
+      stops.map(s => `<tr><td>${s.seq}</td><td>${s.bin_id}</td><td>${s.expected_pct}%</td><td>${s.reason}</td></tr>`).join('');
+  };
+  sel.onchange = draw; draw();
+}
+
+let buyerMarker;
+async function buyer() {
+  const cells = await get('/api/livability/cells');
+  const h = 0.00225 / 2;
+  cells.forEach(c => L.rectangle([[c.lat - h, c.lon - h], [c.lat + h, c.lon + h]],
+      { color: zoneCol(c.zone), weight: 0, fillOpacity: .35 }).addTo(layers.buyer));
+  map.on('click', async e => {
+    if (!map.hasLayer(layers.buyer)) return;
+    const r = await get(`/api/livability?lat=${e.latlng.lat}&lon=${e.latlng.lng}`);
+    if (buyerMarker) buyerMarker.remove();
+    buyerMarker = L.marker(e.latlng).addTo(map);
+    const el = document.getElementById('buyer');
+    if (!r.found) { el.innerHTML = `<p>${r.message}</p>`; return; }
+    el.innerHTML = `<div class="score" style="color:${zoneCol(r.zone)}">${r.score}<small style="font-size:18px">/100</small></div>
+      <p><span class="pill" style="background:${zoneCol(r.zone)};color:#062012">${r.zone}</span> &nbsp;${r.archetype}</p>
+      <p class="hint">Nearest hotspot: ${r.nearest_hotspot_m} m · generation density ${r.kg_day_km2} kg/day/km²</p>
+      <h3>Why</h3><ul>${r.reasons.map(x => `<li>${x}</li>`).join('')}</ul>
+      <h3>Cleaner plots within 2.5 km</h3><table>${r.cleaner_alternatives.map(a =>
+        `<tr><td>${a.lat}, ${a.lon}</td><td>${a.score}/100</td><td>${a.distance_m} m</td></tr>`).join('')}</table>`;
+  });
+}
+
+function show(v) {
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.v === v));
+  document.querySelectorAll('.view').forEach(s => s.classList.toggle('active', s.id === 'v-' + v));
+  Object.entries(layers).forEach(([k, l]) => k === v ? l.addTo(map) : l.remove());
+  if (v === 'collector') document.getElementById('veh').onchange(); else map.setView([12.759, 75.201], 14);
+}
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => show(b.dataset.v));
+muni().then(collector).then(buyer).then(() => show('muni'));
+</script>
+</body>
+</html>
